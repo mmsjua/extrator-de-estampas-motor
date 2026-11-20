@@ -40,7 +40,7 @@ def png_bytes(image):
 
 @app.get("/health")
 def health():
-    return {"status":"ok","version":"0.2.0","capabilities":["remove_white_background","extract_transparent_blocks","upscale_interpolation"],"reconstruction_ai":False,"mockup_extraction":False}
+    return {"status":"ok","version":"0.2.0","capabilities":["remove_white_background","extract_transparent_blocks","upscale_interpolation","vectorize_svg_vtracer"],"reconstruction_ai":False,"mockup_extraction":False}
 
 @app.post("/remove-white-background")
 async def remove_white_background(file: UploadFile = File(...), threshold: int = Query(245,ge=0,le=255)):
@@ -229,3 +229,21 @@ async def crop_region(file: UploadFile = File(...),
         raise HTTPException(422,"Modo invalido")
     return Response(png_bytes(crop),media_type="image/png",
                     headers={"Content-Disposition":'attachment; filename="recorte_manual.png"'})
+
+@app.post("/vectorize")
+async def vectorize(file: UploadFile = File(...)):
+    """VTracer SVG conversion of selected logo artwork. Not semantic reconstruction."""
+    import vtracer
+    image=load_image(await file.read())
+    if image.width*image.height>4_000_000:
+        raise HTTPException(413,"Para vetorizar, use recorte de ate 4 megapixels")
+    data=png_bytes(image)
+    try:
+        svg=vtracer.convert_raw_image_to_svg(data,img_format="png",
+                                            colormode="color",hierarchical="stacked",
+                                            mode="spline",filter_speckle=4,
+                                            color_precision=6,layer_difference=16)
+    except Exception as exc:
+        raise HTTPException(422,"Nao foi possivel vetorizar esta imagem") from exc
+    return Response(svg,media_type="image/svg+xml",
+                    headers={"Content-Disposition":'attachment; filename="arte_vetorizada.svg"'})
