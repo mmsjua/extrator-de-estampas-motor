@@ -40,7 +40,7 @@ def png_bytes(image):
 
 @app.get("/health")
 def health():
-    return {"status":"ok","version":"0.2.0","capabilities":["remove_white_background","extract_transparent_blocks","upscale_interpolation","vectorize_svg_vtracer"],"reconstruction_ai":False,"mockup_extraction":False}
+    return {"status":"ok","version":"0.3.0","capabilities":["crop_region","extract_transparent_blocks","vectorize_svg_vtracer"],"reconstruction_ai":False,"mockup_extraction":False}
 
 @app.post("/remove-white-background")
 async def remove_white_background(file: UploadFile = File(...), threshold: int = Query(245,ge=0,le=255)):
@@ -118,97 +118,6 @@ async def extract_blocks(file: UploadFile = File(...), alpha_threshold: int = Qu
                     headers={"Content-Disposition":'attachment; filename="blocos_estampa.zip"'})
 
 
-@app.post("/extract-color-art")
-async def extract_color_art(file: UploadFile = File(...),
-                            saturation: int = Query(75,ge=20,le=220),
-                            min_area: int = Query(20,ge=1,le=10000)):
-    """Heuristic for colored motifs on pale shirt mockups. NOT AI reconstruction."""
-    image = load_image(await file.read())
-    rgb = np.asarray(image.convert("RGB"),dtype=np.uint8)
-    mx=rgb.max(axis=2).astype(np.int16)
-    mn=rgb.min(axis=2).astype(np.int16)
-    chroma=mx-mn
-    # Saturated pixels only; dark/white artwork may be lost.
-    mask=(chroma>=saturation)&(mx>=75)
-    # Preserve original pixel colors and make non-selected pixels transparent.
-    rgba=np.asarray(image).copy()
-    rgba[:,:,3]=np.where(mask,rgba[:,:,3],0).astype(np.uint8)
-    colored=Image.fromarray(rgba,"RGBA")
-    # Separate nearby colored motifs into groups; reused transparent-block endpoint logic.
-    alpha=np.asarray(colored.getchannel("A"))
-    h,w=alpha.shape
-    step=max(1,(max(h,w)+1799)//1800)
-    small=(alpha[::step,::step]>=16)
-    from PIL import ImageFilter
-    small=np.asarray(Image.fromarray((small*255).astype("uint8"),"L").filter(ImageFilter.MaxFilter(13)))>0
-    H,W=small.shape
-    seen=np.zeros((H,W),dtype=np.uint8)
-    boxes=[]
-    for y in range(H):
-        for x in range(W):
-            if seen[y,x] or not small[y,x]:continue
-            queue=deque([(y,x)]);seen[y,x]=1
-            x0=x1=x;y0=y1=y;area=0
-            while queue:
-                yy,xx=queue.popleft();area+=1
-                x0=min(x0,xx);x1=max(x1,xx);y0=min(y0,yy);y1=max(y1,yy)
-                for ny,nx in ((yy-1,xx),(yy+1,xx),(yy,xx-1),(yy,xx+1)):
-                    if 0<=ny<H and 0<=nx<W and small[ny,nx] and not seen[ny,nx]:
-                        seen[ny,nx]=1;queue.append((ny,nx))
-            if area*step*step<min_area:continue
-            box=(max(0,x0*step-10),max(0,y0*step-10),
-                 min(w,(x1+1)*step+10),min(h,(y1+1)*step+10))
-            boxes.append(box)
-    boxes.sort(key=lambda b:(b[1],b[0]))
-    if len(boxes)>150:raise HTTPException(422,"Muitos blocos; aumente saturacao ou min_area")
-    out=BytesIO()
-    with zipfile.ZipFile(out,"w",compression=zipfile.ZIP_DEFLATED) as z:
-        z.writestr("arte_colorida_total.png",png_bytes(colored))
-        unique=[]
-        rejected=[]
-        for box in boxes:
-            crop=colored.crop(box)
-            alpha=np.asarray(crop.getchannel("A"))
-            ys,xs=np.where(alpha>0)
-            if not len(xs):
-                continue
-            crop=crop.crop((int(xs.min()),int(ys.min()),int(xs.max()+1),int(ys.max()+1)))
-            cw,ch=crop.size
-            # Descarta fragmentos muito pequenos e tiras compridas; heuristica revisavel.
-            if cw*ch<180 or min(cw,ch)<9:
-                rejected.append({"bbox":box,"reason":"fragmento pequeno"})
-                continue
-            if (cw>ch*3.0 and cw>65) or (ch>cw*5 and ch>90):
-                rejected.append({"bbox":box,"reason":"possivel faixa da roupa"})
-                continue
-            # Comparar a silhueta e as cores com tolerancia a tamanho e rotacao.
-            # Nao garante reconhecimento semantico; o arquivo completo permanece no ZIP.
-            from PIL import ImageOps
-            tile=ImageOps.contain(crop,(48,48),Image.Resampling.LANCZOS)
-            normalized=Image.new("RGBA",(48,48),(0,0,0,0))
-            normalized.alpha_composite(tile,((48-tile.width)//2,(48-tile.height)//2))
-            sample=np.asarray(normalized).astype(np.int16)
-            sample[:,:,:3]*=(sample[:,:,3:4]>30)
-            ratio=cw/max(1,ch)
-            duplicate=False
-            for r,prev in unique:
-                if abs(np.log(max(r,0.01)/max(ratio,0.01)))>0.3:
-                    continue
-                alpha_diff=np.mean(np.abs(sample[:,:,3]-prev[:,:,3]))
-                rgb_diff=np.mean(np.abs(sample[:,:,:3]-prev[:,:,:3]))
-                if alpha_diff<24 and rgb_diff<30:
-                    duplicate=True
-                    break
-            if duplicate:
-                rejected.append({"bbox":box,"reason":"possivel duplicata"})
-                continue
-            unique.append((ratio,sample))
-            z.writestr(f"arte_unica_{len(unique):02d}.png",png_bytes(crop))
-        z.writestr("relatorio.json",json.dumps({"detectados":len(boxes),"exportados":len(unique),"descartados":rejected,"aviso":"Filtro aproximado; pode remover desenhos validos. Confira arte_colorida_total.png."},ensure_ascii=False,indent=2))
-        z.writestr("LEIA-ME.txt","EXTRACAO EXPERIMENTAL POR COR. Pode perder textos pretos, brancos e detalhes pouco saturados, incluir detalhes da roupa e dividir ou juntar logos incorretamente. Nao remove perspectiva nem reconstrói arte. Confira antes de imprimir.")
-    return Response(out.getvalue(),media_type="application/zip",
-                    headers={"Content-Disposition":'attachment; filename="artes_coloridas_experimentais.zip"'})
-
 @app.post("/crop-region")
 async def crop_region(file: UploadFile = File(...),
                       x: int = Query(...,ge=0), y: int = Query(...,ge=0),
@@ -248,21 +157,3 @@ async def vectorize(file: UploadFile = File(...)):
     return Response(svg,media_type="image/svg+xml",
                     headers={"Content-Disposition":'attachment; filename="arte_vetorizada.svg"'})
 
-@app.post("/remove-background-ai")
-async def remove_background_ai(file: UploadFile = File(...)):
-    """Free local u2netp ONNX background removal; not shirt print extraction."""
-    from fastapi.concurrency import run_in_threadpool
-    image=load_image(await file.read())
-    if image.width*image.height>4_000_000:
-        raise HTTPException(413,"Limite da remocao por IA: 4 megapixels")
-    def process():
-        from rembg import remove,new_session
-        import os
-        os.environ.setdefault("OMP_NUM_THREADS","2")
-        session=new_session("u2netp")
-        return remove(png_bytes(image),session=session)
-    try:
-        output=await run_in_threadpool(process)
-    except Exception as exc:
-        raise HTTPException(503,"Modelo de IA indisponivel no servidor gratuito") from exc
-    return Response(output,media_type="image/png",headers={"Content-Disposition":'attachment; filename="fundo_removido_ia.png"'})
