@@ -116,3 +116,56 @@ async def extract_blocks(file: UploadFile = File(...), alpha_threshold: int = Qu
         z.writestr("manifest.json",json.dumps(manifest,ensure_ascii=False,indent=2))
     return Response(output.getvalue(),media_type="application/zip",
                     headers={"Content-Disposition":'attachment; filename="blocos_estampa.zip"'})
+
+
+@app.post("/extract-color-art")
+async def extract_color_art(file: UploadFile = File(...),
+                            saturation: int = Query(75,ge=20,le=220),
+                            min_area: int = Query(20,ge=1,le=10000)):
+    """Heuristic for colored motifs on pale shirt mockups. NOT AI reconstruction."""
+    image = load_image(await file.read())
+    rgb = np.asarray(image.convert("RGB"),dtype=np.uint8)
+    mx=rgb.max(axis=2).astype(np.int16)
+    mn=rgb.min(axis=2).astype(np.int16)
+    chroma=mx-mn
+    # Saturated pixels only; dark/white artwork may be lost.
+    mask=(chroma>=saturation)&(mx>=75)
+    # Preserve original pixel colors and make non-selected pixels transparent.
+    rgba=np.asarray(image).copy()
+    rgba[:,:,3]=np.where(mask,rgba[:,:,3],0).astype(np.uint8)
+    colored=Image.fromarray(rgba,"RGBA")
+    # Separate nearby colored motifs into groups; reused transparent-block endpoint logic.
+    alpha=np.asarray(colored.getchannel("A"))
+    h,w=alpha.shape
+    step=max(1,(max(h,w)+1799)//1800)
+    small=(alpha[::step,::step]>=16)
+    from PIL import ImageFilter
+    small=np.asarray(Image.fromarray((small*255).astype("uint8"),"L").filter(ImageFilter.MaxFilter(13)))>0
+    H,W=small.shape
+    seen=np.zeros((H,W),dtype=np.uint8)
+    boxes=[]
+    for y in range(H):
+        for x in range(W):
+            if seen[y,x] or not small[y,x]:continue
+            queue=deque([(y,x)]);seen[y,x]=1
+            x0=x1=x;y0=y1=y;area=0
+            while queue:
+                yy,xx=queue.popleft();area+=1
+                x0=min(x0,xx);x1=max(x1,xx);y0=min(y0,yy);y1=max(y1,yy)
+                for ny,nx in ((yy-1,xx),(yy+1,xx),(yy,xx-1),(yy,xx+1)):
+                    if 0<=ny<H and 0<=nx<W and small[ny,nx] and not seen[ny,nx]:
+                        seen[ny,nx]=1;queue.append((ny,nx))
+            if area*step*step<min_area:continue
+            box=(max(0,x0*step-10),max(0,y0*step-10),
+                 min(w,(x1+1)*step+10),min(h,(y1+1)*step+10))
+            boxes.append(box)
+    boxes.sort(key=lambda b:(b[1],b[0]))
+    if len(boxes)>150:raise HTTPException(422,"Muitos blocos; aumente saturacao ou min_area")
+    out=BytesIO()
+    with zipfile.ZipFile(out,"w",compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("arte_colorida_total.png",png_bytes(colored))
+        for i,box in enumerate(boxes,1):
+            z.writestr(f"bloco_cor_{i:02d}.png",png_bytes(colored.crop(box)))
+        z.writestr("LEIA-ME.txt","EXTRACAO EXPERIMENTAL POR COR. Pode perder textos pretos, brancos e detalhes pouco saturados, incluir detalhes da roupa e dividir ou juntar logos incorretamente. Nao remove perspectiva nem reconstrói arte. Confira antes de imprimir.")
+    return Response(out.getvalue(),media_type="application/zip",
+                    headers={"Content-Disposition":'attachment; filename="artes_coloridas_experimentais.zip"'})
