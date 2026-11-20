@@ -208,3 +208,24 @@ async def extract_color_art(file: UploadFile = File(...),
         z.writestr("LEIA-ME.txt","EXTRACAO EXPERIMENTAL POR COR. Pode perder textos pretos, brancos e detalhes pouco saturados, incluir detalhes da roupa e dividir ou juntar logos incorretamente. Nao remove perspectiva nem reconstrói arte. Confira antes de imprimir.")
     return Response(out.getvalue(),media_type="application/zip",
                     headers={"Content-Disposition":'attachment; filename="artes_coloridas_experimentais.zip"'})
+
+@app.post("/crop-region")
+async def crop_region(file: UploadFile = File(...),
+                      x: int = Query(...,ge=0), y: int = Query(...,ge=0),
+                      width: int = Query(...,ge=1), height: int = Query(...,ge=1),
+                      mode: str = Query("original")):
+    """Manual precise crop. Transparent color filtering is optional and imperfect."""
+    image=load_image(await file.read())
+    if x>=image.width or y>=image.height or x+width>image.width or y+height>image.height:
+        raise HTTPException(422,"Area selecionada fora da imagem")
+    crop=image.crop((x,y,x+width,y+height))
+    if mode=="color":
+        a=np.asarray(crop).copy()
+        rgb=a[:,:,:3].astype(np.int16)
+        chroma=rgb.max(axis=2)-rgb.min(axis=2)
+        a[:,:,3]=np.where(chroma>=55,a[:,:,3],0).astype(np.uint8)
+        crop=Image.fromarray(a,"RGBA")
+    elif mode!="original":
+        raise HTTPException(422,"Modo invalido")
+    return Response(png_bytes(crop),media_type="image/png",
+                    headers={"Content-Disposition":'attachment; filename="recorte_manual.png"'})
