@@ -164,8 +164,29 @@ async def extract_color_art(file: UploadFile = File(...),
     out=BytesIO()
     with zipfile.ZipFile(out,"w",compression=zipfile.ZIP_DEFLATED) as z:
         z.writestr("arte_colorida_total.png",png_bytes(colored))
-        for i,box in enumerate(boxes,1):
-            z.writestr(f"bloco_cor_{i:02d}.png",png_bytes(colored.crop(box)))
+        unique=[]
+        rejected=[]
+        for box in boxes:
+            crop=colored.crop(box)
+            alpha=np.asarray(crop.getchannel("A"))
+            ys,xs=np.where(alpha>0)
+            if not len(xs):
+                continue
+            crop=crop.crop((int(xs.min()),int(ys.min()),int(xs.max()+1),int(ys.max()+1)))
+            cw,ch=crop.size
+            if cw>ch*4 and cw>65:
+                rejected.append({"bbox":box,"reason":"faixa horizontal"})
+                continue
+            sample=np.asarray(crop.resize((32,32),Image.Resampling.BILINEAR)).astype(np.int16)
+            sample[:,:,:3]*=(sample[:,:,3:4]>25)
+            ratio=cw/max(1,ch)
+            duplicate=any(abs(ratio-r)<0.2 and np.mean(np.abs(sample-prev))<18 for r,prev in unique)
+            if duplicate:
+                rejected.append({"bbox":box,"reason":"possivel duplicata"})
+                continue
+            unique.append((ratio,sample))
+            z.writestr(f"arte_unica_{len(unique):02d}.png",png_bytes(crop))
+        z.writestr("relatorio.json",json.dumps({"detectados":len(boxes),"exportados":len(unique),"descartados":rejected,"aviso":"Filtro aproximado; pode remover desenhos validos. Confira arte_colorida_total.png."},ensure_ascii=False,indent=2))
         z.writestr("LEIA-ME.txt","EXTRACAO EXPERIMENTAL POR COR. Pode perder textos pretos, brancos e detalhes pouco saturados, incluir detalhes da roupa e dividir ou juntar logos incorretamente. Nao remove perspectiva nem reconstrói arte. Confira antes de imprimir.")
     return Response(out.getvalue(),media_type="application/zip",
                     headers={"Content-Disposition":'attachment; filename="artes_coloridas_experimentais.zip"'})
