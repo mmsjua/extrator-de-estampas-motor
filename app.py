@@ -8,11 +8,12 @@ import zipfile
 import json
 from pathlib import Path
 
+app = FastAPI(title="Extrator de Estampas - Motor Experimental", version="0.2.0")
+
 @app.get('/', response_class=HTMLResponse)
 def home():
     return Path(__file__).with_name('index.html').read_text(encoding='utf-8')
 
-app = FastAPI(title="Extrator de Estampas - Motor Experimental", version="0.2.0")
 MAX_BYTES = 15_000_000
 MAX_PIXELS = 25_000_000
 
