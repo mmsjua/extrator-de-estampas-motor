@@ -167,6 +167,10 @@ async def vectorize_package(file: UploadFile = File(...), scale: int = Query(4,g
     image=load_image(await file.read())
     if image.width*image.height>2_000_000:
         raise HTTPException(413,"Recorte a logo para ate 2 megapixels antes de vetorizar")
+    # Reject opaque photos: tracing fabric pixels as logo creates poor quality.
+    alpha=np.asarray(image.getchannel("A"))
+    if np.all(alpha==255):
+        raise HTTPException(422,"Para vetorizar logo com fundo transparente, envie PNG com transparencia. Foto inteira de camisa vira milhares de manchas vetoriais; primeiro isole a arte.")
     if image.width*image.height*scale*scale>25_000_000:
         raise HTTPException(413,"PNG ampliado excede limite de 25 megapixels")
     try:
