@@ -1,11 +1,16 @@
 from io import BytesIO
 from collections import deque
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response, HTMLResponse
 from PIL import Image
 import numpy as np
 import zipfile
 import json
+from pathlib import Path
+
+@app.get('/', response_class=HTMLResponse)
+def home():
+    return Path(__file__).with_name('index.html').read_text(encoding='utf-8')
 
 app = FastAPI(title="Extrator de Estampas - Motor Experimental", version="0.2.0")
 MAX_BYTES = 15_000_000
