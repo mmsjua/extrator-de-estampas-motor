@@ -157,3 +157,50 @@ async def vectorize(file: UploadFile = File(...)):
     return Response(svg,media_type="image/svg+xml",
                     headers={"Content-Disposition":'attachment; filename="arte_vetorizada.svg"'})
 
+
+@app.post("/vectorize-package")
+async def vectorize_package(file: UploadFile = File(...), scale: int = Query(4,ge=1,le=6)):
+    """Vector paths + PNG rendered from SVG; similarity report, no invented AI reconstruction."""
+    import vtracer
+    import cairosvg
+    from PIL import ImageChops,ImageStat
+    image=load_image(await file.read())
+    if image.width*image.height>2_000_000:
+        raise HTTPException(413,"Recorte a logo para ate 2 megapixels antes de vetorizar")
+    if image.width*image.height*scale*scale>25_000_000:
+        raise HTTPException(413,"PNG ampliado excede limite de 25 megapixels")
+    try:
+        svg=vtracer.convert_raw_image_to_svg(png_bytes(image),img_format="png",
+                                            colormode="color",hierarchical="stacked",
+                                            mode="spline",filter_speckle=2,
+                                            color_precision=8,layer_difference=8)
+        preview=cairosvg.svg2png(bytestring=svg.encode("utf-8"),
+                                output_width=image.width,output_height=image.height)
+        preview_img=Image.open(BytesIO(preview)).convert("RGBA")
+        original_rgb=image.convert("RGB")
+        traced_rgb=preview_img.convert("RGB")
+        import numpy as np
+        err=float(np.mean(np.abs(np.asarray(original_rgb,dtype=np.float32)-
+                                 np.asarray(traced_rgb,dtype=np.float32))))
+        png=cairosvg.svg2png(bytestring=svg.encode("utf-8"),
+                            output_width=image.width*scale,
+                            output_height=image.height*scale)
+        png_image=Image.open(BytesIO(png)).convert("RGBA")
+        output=BytesIO()
+        with zipfile.ZipFile(output,"w",compression=zipfile.ZIP_DEFLATED) as z:
+            z.writestr("arte_vetorizada.svg",svg)
+            z.writestr("arte_vetorial_alta_resolucao.png",png_bytes(png_image))
+            z.writestr("comparacao_original.png",png_bytes(image))
+            z.writestr("relatorio_qualidade.json",json.dumps({
+                "metodo":"VTracer + CairoSVG",
+                "erro_medio_rgb_0_a_255":round(err,2),
+                "resolucao_png":list(png_image.size),
+                "escala":scale,
+                "aviso":"A metrica compara pixels, nao garante fidelidade de letras nem reconstrucao de detalhes perdidos. O SVG pode conter partes de tecido se estiverem no recorte."
+            },ensure_ascii=False,indent=2))
+        return Response(output.getvalue(),media_type="application/zip",
+                        headers={"Content-Disposition":'attachment; filename="vetor_e_png.zip"'})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(422,"Falha na vetorizacao ou renderizacao SVG") from exc
