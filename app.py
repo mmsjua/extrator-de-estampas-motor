@@ -174,13 +174,31 @@ async def extract_color_art(file: UploadFile = File(...),
                 continue
             crop=crop.crop((int(xs.min()),int(ys.min()),int(xs.max()+1),int(ys.max()+1)))
             cw,ch=crop.size
-            if cw>ch*4 and cw>65:
-                rejected.append({"bbox":box,"reason":"faixa horizontal"})
+            # Descarta fragmentos muito pequenos e tiras compridas; heuristica revisavel.
+            if cw*ch<180 or min(cw,ch)<9:
+                rejected.append({"bbox":box,"reason":"fragmento pequeno"})
                 continue
-            sample=np.asarray(crop.resize((32,32),Image.Resampling.BILINEAR)).astype(np.int16)
-            sample[:,:,:3]*=(sample[:,:,3:4]>25)
+            if (cw>ch*3.0 and cw>65) or (ch>cw*5 and ch>90):
+                rejected.append({"bbox":box,"reason":"possivel faixa da roupa"})
+                continue
+            # Comparar a silhueta e as cores com tolerancia a tamanho e rotacao.
+            # Nao garante reconhecimento semantico; o arquivo completo permanece no ZIP.
+            from PIL import ImageOps
+            tile=ImageOps.contain(crop,(48,48),Image.Resampling.LANCZOS)
+            normalized=Image.new("RGBA",(48,48),(0,0,0,0))
+            normalized.alpha_composite(tile,((48-tile.width)//2,(48-tile.height)//2))
+            sample=np.asarray(normalized).astype(np.int16)
+            sample[:,:,:3]*=(sample[:,:,3:4]>30)
             ratio=cw/max(1,ch)
-            duplicate=any(abs(ratio-r)<0.2 and np.mean(np.abs(sample-prev))<18 for r,prev in unique)
+            duplicate=False
+            for r,prev in unique:
+                if abs(np.log(max(r,0.01)/max(ratio,0.01)))>0.3:
+                    continue
+                alpha_diff=np.mean(np.abs(sample[:,:,3]-prev[:,:,3]))
+                rgb_diff=np.mean(np.abs(sample[:,:,:3]-prev[:,:,:3]))
+                if alpha_diff<24 and rgb_diff<30:
+                    duplicate=True
+                    break
             if duplicate:
                 rejected.append({"bbox":box,"reason":"possivel duplicata"})
                 continue
