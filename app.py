@@ -247,3 +247,22 @@ async def vectorize(file: UploadFile = File(...)):
         raise HTTPException(422,"Nao foi possivel vetorizar esta imagem") from exc
     return Response(svg,media_type="image/svg+xml",
                     headers={"Content-Disposition":'attachment; filename="arte_vetorizada.svg"'})
+
+@app.post("/remove-background-ai")
+async def remove_background_ai(file: UploadFile = File(...)):
+    """Free local u2netp ONNX background removal; not shirt print extraction."""
+    from fastapi.concurrency import run_in_threadpool
+    image=load_image(await file.read())
+    if image.width*image.height>4_000_000:
+        raise HTTPException(413,"Limite da remocao por IA: 4 megapixels")
+    def process():
+        from rembg import remove,new_session
+        import os
+        os.environ.setdefault("OMP_NUM_THREADS","2")
+        session=new_session("u2netp")
+        return remove(png_bytes(image),session=session)
+    try:
+        output=await run_in_threadpool(process)
+    except Exception as exc:
+        raise HTTPException(503,"Modelo de IA indisponivel no servidor gratuito") from exc
+    return Response(output,media_type="image/png",headers={"Content-Disposition":'attachment; filename="fundo_removido_ia.png"'})
