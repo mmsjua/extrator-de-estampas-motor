@@ -1,0 +1,14 @@
+{
+  "name": "extrator-de-estampas-chatgpt",
+  "version": "0.3.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "express": "^4.21.2",
+    "sharp": "^0.33.5",
+    "zod": "^3.24.2"
+  }
+}
