@@ -21,7 +21,7 @@ const notice={
  selecionar_area:"Área selecionada exportada em PNG."
 };
 function makeServer(){
- const s=new McpServer({name:"extrator-de-estampas",version:"0.3.0"});
+ const s=new McpServer({name:"extrator-de-estampas",version:"0.4.0"});
  s.resource("painel","ui://extrator/painel.html",async()=>({contents:[{uri:"ui://extrator/painel.html",mimeType:"text/html+skybridge",text:html}]}));
  s.tool("abrir_extrator","Abre painel interativo do Extrator de Estampas com 9 botões e upload.",{},async()=>({content:[{type:"text",text:"Painel de extração disponível."}],_meta:{"openai/outputTemplate":"ui://extrator/painel.html"}}));
  s.tool("processar_estampa","Exporta recorte PNG da imagem enviada; remove branco quase puro nas opções logo e textos. Não faz reconstrução por IA.",{
@@ -44,21 +44,32 @@ function makeServer(){
     const height=Math.max(1,Math.min(info.height-top,Math.floor(area.h*info.height)));
     img=img.extract({left,top,width,height});
    }
-   let png=await img.ensureAlpha().png().toBuffer();
+   // Upscale determinístico ANTES da exportação final. Evita filtros criativos.
+   // Limites protegem a memória do servidor gratuito e o tamanho da resposta MCP.
+   const base=await img.ensureAlpha().png().toBuffer();
+   const baseMeta=await sharp(base).metadata();
+   const maxSide=Math.max(baseMeta.width,baseMeta.height);
+   const scale=Math.min(4,3200/maxSide,Math.sqrt(12_000_000/(baseMeta.width*baseMeta.height)));
+   const factor=Math.max(1,scale);
+   const targetW=Math.max(1,Math.round(baseMeta.width*factor));
+   const targetH=Math.max(1,Math.round(baseMeta.height*factor));
+   let png=await sharp(base).resize(targetW,targetH,{kernel:"lanczos3",fit:"fill"})
+    .sharpen({sigma:0.65,m1:0.5,m2:1.2,x1:2,y2:10,y3:20})
+    .withMetadata({density:300}).png({compressionLevel:9}).toBuffer();
    if(operacao==="logo"||operacao==="textos_artes"){
     const {data,info:rawInfo}=await sharp(png).raw().toBuffer({resolveWithObject:true});
     for(let i=0;i<data.length;i+=rawInfo.channels){
      if(data[i]>=248&&data[i+1]>=248&&data[i+2]>=248)data[i+3]=0;
     }
-    png=await sharp(data,{raw:rawInfo}).png().toBuffer();
+    png=await sharp(data,{raw:rawInfo}).withMetadata({density:300}).png({compressionLevel:9}).toBuffer();
    }
    if(png.length>8_000_000)throw Error("PNG grande demais; selecione uma área menor.");
-   return {structuredContent:{ok:true,filename:operacao+".png",png_base64:png.toString("base64"),notice:notice[operacao]},content:[{type:"text",text:"PNG gerado. "+notice[operacao]}]};
+   return {structuredContent:{ok:true,filename:operacao+".png",png_base64:png.toString("base64"),notice:notice[operacao]+" Upscale "+factor.toFixed(2)+"x ("+targetW+"×"+targetH+" px), 300 DPI em metadados.",upscale:{factor,width:targetW,height:targetH,algorithm:"lanczos3_sharpen",ai:false}},content:[{type:"text",text:"PNG gerado. "+notice[operacao]}]};
   }catch(e){return {isError:true,structuredContent:{ok:false,error:e.message},content:[{type:"text",text:"Erro: "+e.message}]}};
  });
  return s;
 }
-app.get("/health",(_,res)=>res.json({ok:true,version:"0.3.0",image_processing:"basic_png_crop",ai_generation:false}));
+app.get("/health",(_,res)=>res.json({ok:true,version:"0.4.0",image_processing:"png_crop_upscale_lanczos3",ai_generation:false}));
 app.get("/",(_,res)=>res.type("text").send("Extrator de Estampas MCP: conecte /mcp ao ChatGPT."));
 app.post("/mcp",async(req,res)=>{const s=makeServer();const t=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});res.on("close",()=>{t.close();s.close()});try{await s.connect(t);await t.handleRequest(req,res,req.body)}catch(e){if(!res.headersSent)res.status(500).json({error:String(e)})}});
 app.listen(process.env.PORT||3000,"0.0.0.0",()=>console.log("MCP pronto"));
