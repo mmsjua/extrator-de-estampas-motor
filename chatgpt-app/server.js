@@ -12,16 +12,16 @@ const ops=["fundo","logo","frente","costas","fundo_logo","textos_artes","mangas"
 const limits={file:7_000_000,pixels:20_000_000};
 const notice={
  fundo:"Recorte PNG gerado. Remoção inteligente de logos e textos ainda não implementada.",
- logo:"PNG gerado com branco quase puro transparente. Fundos complexos ainda precisam de tratamento.",
+ logo:"Recorte PNG fiel; a transparência original é preservada. Remoção inteligente do fundo ainda não implementada.",
  frente:"PNG recortado. Planificação de perspectiva ainda não implementada.",
  costas:"PNG recortado. Planificação de perspectiva ainda não implementada.",
  fundo_logo:"Recorte PNG gerado. Separação automática fundo/logo ainda não implementada.",
- textos_artes:"PNG com branco quase puro transparente. Detecção de blocos ainda não implementada.",
+ textos_artes:"Recorte PNG fiel; a transparência original é preservada. Detecção de blocos ainda não implementada.",
  mangas:"PNG recortado. Selecione manualmente a região da manga.",
  selecionar_area:"Área selecionada exportada em PNG."
 };
 function makeServer(){
- const s=new McpServer({name:"extrator-de-estampas",version:"0.4.0"});
+ const s=new McpServer({name:"extrator-de-estampas",version:"0.4.1"});
  s.resource("painel","ui://extrator/painel.html",async()=>({contents:[{uri:"ui://extrator/painel.html",mimeType:"text/html+skybridge",text:html}]}));
  s.tool("abrir_extrator","Abre painel interativo do Extrator de Estampas com 9 botões e upload.",{},async()=>({content:[{type:"text",text:"Painel de extração disponível."}],_meta:{"openai/outputTemplate":"ui://extrator/painel.html"}}));
  s.tool("processar_estampa","Exporta recorte PNG da imagem enviada; remove branco quase puro nas opções logo e textos. Não faz reconstrução por IA.",{
@@ -54,17 +54,11 @@ function makeServer(){
    const targetW=Math.max(1,Math.round(baseMeta.width*factor));
    const targetH=Math.max(1,Math.round(baseMeta.height*factor));
    let png=await sharp(base).resize(targetW,targetH,{kernel:"lanczos3",fit:"fill"})
-    .sharpen({sigma:0.65,m1:0.5,m2:1.2,x1:2,y2:10,y3:20})
     .withMetadata({density:300}).png({compressionLevel:9}).toBuffer();
-   if(operacao==="logo"||operacao==="textos_artes"){
-    const {data,info:rawInfo}=await sharp(png).raw().toBuffer({resolveWithObject:true});
-    for(let i=0;i<data.length;i+=rawInfo.channels){
-     if(data[i]>=248&&data[i+1]>=248&&data[i+2]>=248)data[i+3]=0;
-    }
-    png=await sharp(data,{raw:rawInfo}).withMetadata({density:300}).png({compressionLevel:9}).toBuffer();
-   }
+   // Fidelidade: não apagar pixels brancos automaticamente; branco pode fazer parte da arte.
+   // Transparência existente no original é preservada, mas fundo complexo não é segmentado.
    if(png.length>8_000_000)throw Error("PNG grande demais; selecione uma área menor.");
-   return {structuredContent:{ok:true,filename:operacao+".png",png_base64:png.toString("base64"),notice:notice[operacao]+" Upscale "+factor.toFixed(2)+"x ("+targetW+"×"+targetH+" px), 300 DPI em metadados.",upscale:{factor,width:targetW,height:targetH,algorithm:"lanczos3_sharpen",ai:false}},content:[{type:"text",text:"PNG gerado. "+notice[operacao]}]};
+   return {structuredContent:{ok:true,filename:operacao+".png",png_base64:png.toString("base64"),notice:notice[operacao]+" Upscale "+factor.toFixed(2)+"x ("+targetW+"×"+targetH+" px), 300 DPI em metadados.",upscale:{factor,width:targetW,height:targetH,algorithm:"lanczos3_no_sharpen",ai:false}},content:[{type:"text",text:"PNG gerado. "+notice[operacao]}]};
   }catch(e){return {isError:true,structuredContent:{ok:false,error:e.message},content:[{type:"text",text:"Erro: "+e.message}]}};
  });
  return s;
