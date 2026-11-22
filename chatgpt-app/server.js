@@ -20,14 +20,7 @@ const notice={
  mangas:"PNG recortado. Selecione manualmente a região da manga.",
  selecionar_area:"Área selecionada exportada em PNG."
 };
-function makeServer(){
- const s=new McpServer({name:"extrator-de-estampas",version:"0.4.1"});
- s.resource("painel","ui://extrator/painel.html",async()=>({contents:[{uri:"ui://extrator/painel.html",mimeType:"text/html+skybridge",text:html}]}));
- s.tool("abrir_extrator","Abre painel interativo do Extrator de Estampas com 9 botões e upload.",{},async()=>({content:[{type:"text",text:"Painel de extração disponível."}],_meta:{"openai/outputTemplate":"ui://extrator/painel.html"}}));
- s.tool("processar_estampa","Exporta recorte PNG da imagem enviada; remove branco quase puro nas opções logo e textos. Não faz reconstrução por IA.",{
- operacao:z.enum(ops),imagem_base64:z.string().max(12_000_000),
- area:z.object({x:z.number().min(0).max(1),y:z.number().min(0).max(1),w:z.number().min(0).max(1),h:z.number().min(0).max(1)}).optional()
- },async({operacao,imagem_base64,area})=>{
+async function processImage({operacao,imagem_base64,area})=>{
   try{
    if(operacao==="nova_imagem")return {structuredContent:{ok:true,message:"Escolha outra imagem."},content:[{type:"text",text:"Escolha outra imagem."}]};
    const raw=imagem_base64.replace(/^data:image\/(png|jpeg|webp);base64,/,"");
@@ -60,10 +53,20 @@ function makeServer(){
    if(png.length>8_000_000)throw Error("PNG grande demais; selecione uma área menor.");
    return {structuredContent:{ok:true,filename:operacao+".png",png_base64:png.toString("base64"),notice:notice[operacao]+" Upscale "+factor.toFixed(2)+"x ("+targetW+"×"+targetH+" px), 300 DPI em metadados.",upscale:{factor,width:targetW,height:targetH,algorithm:"lanczos3_no_sharpen",ai:false}},content:[{type:"text",text:"PNG gerado. "+notice[operacao]}]};
   }catch(e){return {isError:true,structuredContent:{ok:false,error:e.message},content:[{type:"text",text:"Erro: "+e.message}]}};
- });
+ }
+function makeServer(){
+ const s=new McpServer({name:"extrator-de-estampas",version:"0.4.1"});
+ s.resource("painel","ui://extrator/painel.html",async()=>({contents:[{uri:"ui://extrator/painel.html",mimeType:"text/html+skybridge",text:html}]}));
+ s.tool("abrir_extrator","Abre painel interativo do Extrator de Estampas com 9 botões e upload.",{},async()=>({content:[{type:"text",text:"Painel de extração disponível."}],_meta:{"openai/outputTemplate":"ui://extrator/painel.html"}}));
+ s.tool("processar_estampa","Exporta recorte PNG da imagem enviada; remove branco quase puro nas opções logo e textos. Não faz reconstrução por IA.",{
+ operacao:z.enum(ops),imagem_base64:z.string().max(12_000_000),
+ area:z.object({x:z.number().min(0).max(1),y:z.number().min(0).max(1),w:z.number().min(0).max(1),h:z.number().min(0).max(1)}).optional()
+ },processImage);
  return s;
 }
 app.get("/health",(_,res)=>res.json({ok:true,version:"0.4.0",image_processing:"png_crop_upscale_lanczos3",ai_generation:false}));
 app.get("/",(_,res)=>res.type("text").send("Extrator de Estampas MCP: conecte /mcp ao ChatGPT."));
+app.use((req,res,next)=>{res.setHeader("Access-Control-Allow-Origin","https://mmsjua.github.io");res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");res.setHeader("Access-Control-Allow-Headers","Content-Type");if(req.method==="OPTIONS")return res.sendStatus(204);next()});
+app.post("/api/processar",async(req,res)=>{try{const {operacao,imagem_base64,area}=req.body||{};if(!ops.includes(operacao)||typeof imagem_base64!=="string")return res.status(400).json({ok:false,error:"Operação ou imagem inválida"});const result=await processImage({operacao,imagem_base64,area});const data=result.structuredContent||{};res.status(data.ok?200:422).json(data)}catch(e){res.status(500).json({ok:false,error:String(e.message||e)})}});
 app.post("/mcp",async(req,res)=>{const s=makeServer();const t=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});res.on("close",()=>{t.close();s.close()});try{await s.connect(t);await t.handleRequest(req,res,req.body)}catch(e){if(!res.headersSent)res.status(500).json({error:String(e)})}});
 app.listen(process.env.PORT||3000,"0.0.0.0",()=>console.log("MCP pronto"));
