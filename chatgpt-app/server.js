@@ -20,7 +20,7 @@ const notice={
  mangas:"PNG recortado. Selecione manualmente a região da manga.",
  selecionar_area:"Área selecionada exportada em PNG."
 };
-async function processImage({operacao,imagem_base64,area})=>{
+async function processImage({operacao,imagem_base64,area}){
   try{
    if(operacao==="nova_imagem")return {structuredContent:{ok:true,message:"Escolha outra imagem."},content:[{type:"text",text:"Escolha outra imagem."}]};
    const raw=imagem_base64.replace(/^data:image\/(png|jpeg|webp);base64,/,"");
