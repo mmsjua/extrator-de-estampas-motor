@@ -68,5 +68,44 @@ app.get("/health",(_,res)=>res.json({ok:true,version:"0.4.0",image_processing:"p
 app.get("/",(_,res)=>res.type("text").send("Extrator de Estampas MCP: conecte /mcp ao ChatGPT."));
 app.use((req,res,next)=>{res.setHeader("Access-Control-Allow-Origin","https://mmsjua.github.io");res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");res.setHeader("Access-Control-Allow-Headers","Content-Type");if(req.method==="OPTIONS")return res.sendStatus(204);next()});
 app.post("/api/processar",async(req,res)=>{try{const {operacao,imagem_base64,area}=req.body||{};if(!ops.includes(operacao)||typeof imagem_base64!=="string")return res.status(400).json({ok:false,error:"Operação ou imagem inválida"});const result=await processImage({operacao,imagem_base64,area});const data=result.structuredContent||{};res.status(data.ok?200:422).json(data)}catch(e){res.status(500).json({ok:false,error:String(e.message||e)})}});
+
+const aiPrompts={
+ fundo:"Extraia somente a padronagem de fundo da camisa da imagem de referência. Produza arte plana retangular para impressão, vista frontal, sem mockup, tecido, gola, costuras, dobras, sombras, logos, brasões, textos ou números. Preserve exatamente cores, motivos e disposição verificáveis. Não invente elementos nas partes ocultas. Imagem de alta nitidez.",
+ logo:"Isole apenas a logomarca principal presente na camisa de referência. Preserve rigorosamente grafia, acentos, símbolos, cores, proporções e traços. Fundo transparente. Não redesenhe criativamente nem invente detalhes ilegíveis. Enquadramento justo, sem margem vazia.",
+ frente:"Reproduza a arte plana da frente da camisa para impressão, sem corpo, gola, costuras, dobras, tecido ou perspectiva. Preserve fundo, logos e textos da referência nas posições verificáveis. Não invente letras ou detalhes ocultos.",
+ costas:"Reproduza somente a arte plana das costas da camisa para impressão, sem mockup, tecido, costuras ou perspectiva. Preserve fielmente padronagem, letras, cores e logos visíveis; não invente elementos.",
+ fundo_logo:"Extraia a padronagem plana de fundo da camisa, sem logomarcas nem textos. Preserve cores e motivos verificáveis. Não invente detalhes escondidos.",
+ textos_artes:"Isole as letras e ilustrações da estampa da camisa, sem padronagem de fundo ou tecido. Fundo transparente. Preserve exatamente grafia, formas, proporções e cores visíveis, sem inventar.",
+ mangas:"Reproduza a arte plana da manga visível na referência, sem tecido, costuras, perspectiva ou dobras. Preserve somente os elementos confirmados."
+};
+app.get("/api/ai-status",(_,res)=>res.json({configured:Boolean(process.env.OPENAI_API_KEY),model:process.env.OPENAI_IMAGE_MODEL||"gpt-image-1",requiresSeparateApiBilling:true}));
+app.post("/api/ai-extract",async(req,res)=>{
+ try{
+  const {operacao,imagem_base64}=req.body||{};
+  if(!Object.hasOwn(aiPrompts,operacao)||typeof imagem_base64!=="string")return res.status(400).json({ok:false,error:"Operação ou imagem inválida"});
+  if(!process.env.OPENAI_API_KEY)return res.status(503).json({ok:false,error:"IA ainda não configurada no servidor. É necessária uma chave de API com faturamento próprio."});
+  const raw=imagem_base64.replace(/^data:image\\/(png|jpeg|webp);base64,/,"");
+  if(!/^[A-Za-z0-9+/=]+$/.test(raw))return res.status(400).json({ok:false,error:"Imagem inválida"});
+  const bytes=Buffer.from(raw,"base64");
+  if(bytes.length>7_000_000)return res.status(413).json({ok:false,error:"Imagem maior que 7 MB"});
+  const meta=await sharp(bytes).metadata();
+  if(!meta.width||!meta.height||meta.width*meta.height>20_000_000)return res.status(413).json({ok:false,error:"Dimensões excedem o limite"});
+  const png=await sharp(bytes).rotate().png().toBuffer();
+  const form=new FormData();
+  form.append("model",process.env.OPENAI_IMAGE_MODEL||"gpt-image-1");
+  form.append("image",new Blob([png],{type:"image/png"}),"referencia.png");
+  form.append("prompt",aiPrompts[operacao]+" Não afirme fidelidade perfeita onde a referência é insuficiente.");
+  form.append("size","1024x1536");
+  form.append("quality","high");
+  const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),180000);
+  let response;try{response=await fetch("https://api.openai.com/v1/images/edits",{method:"POST",headers:{Authorization:"Bearer "+process.env.OPENAI_API_KEY},body:form,signal:controller.signal})}finally{clearTimeout(timer)}
+  const data=await response.json();
+  if(!response.ok)return res.status(502).json({ok:false,error:data.error?.message||"Falha no serviço de IA"});
+  const b64=data.data?.[0]?.b64_json;
+  if(!b64)return res.status(502).json({ok:false,error:"A API não retornou imagem"});
+  return res.json({ok:true,filename:operacao+"_ia.png",png_base64:b64,notice:"Resultado gerado por IA. Compare grafia, símbolos e detalhes com a foto original antes de imprimir. Não é SVG vetorial."});
+ }catch(e){return res.status(500).json({ok:false,error:e.name==="AbortError"?"Tempo limite de processamento de IA":String(e.message||e)})}
+});
+
 app.post("/mcp",async(req,res)=>{const s=makeServer();const t=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});res.on("close",()=>{t.close();s.close()});try{await s.connect(t);await t.handleRequest(req,res,req.body)}catch(e){if(!res.headersSent)res.status(500).json({error:String(e)})}});
 app.listen(process.env.PORT||3000,"0.0.0.0",()=>console.log("MCP pronto"));
