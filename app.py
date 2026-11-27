@@ -183,8 +183,7 @@ async def vectorize_package(file: UploadFile = File(...), scale: int = Query(4,g
         preview_img=Image.open(BytesIO(preview)).convert("RGBA")
         original_rgb=image.convert("RGB")
         traced_rgb=preview_img.convert("RGB")
-        import numpy as np
-        err=float(np.mean(np.abs(np.asarray(original_rgb,dtype=np.float32)-
+            err=float(np.mean(np.abs(np.asarray(original_rgb,dtype=np.float32)-
                                  np.asarray(traced_rgb,dtype=np.float32))))
         png=cairosvg.svg2png(bytestring=svg.encode("utf-8"),
                             output_width=image.width*scale,
